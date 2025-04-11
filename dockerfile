@@ -3,4 +3,4 @@ WORKDIR /app
 COPY gopale_app.py .
 RUN pip install flask
 EXPOSE 5000
-CMD ["python", "gopale-app.py"]
+CMD ["python", "gopale_app.py"]

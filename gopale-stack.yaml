@@ -16,7 +16,7 @@ Parameters:
   GitHubToken:
     Type: String
     NoEcho: true
-    Description: GitHub Personal Access Token (store in Secrets Manager or pass securely)
+    Description: GitHub Personal Access Token
 
 Resources:
   # VPC
@@ -209,6 +209,16 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/gopale-task:*
+              - Effect: Allow
+                Action:
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:BatchCheckLayerAvailability
+                Resource: !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/gopale-ecr
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
 
   # Task Definition
   GopaleTaskDefinition:
@@ -406,7 +416,10 @@ Resources:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:GetObjectVersion
-                Resource: !Sub arn:aws:s3:::${GopaleArtifactBucket}/*
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${GopaleArtifactBucket}/*
+                  - !Sub arn:aws:s3:::${GopaleArtifactBucket}
 
   # CodePipeline
   GopaleCodePipeline:
@@ -495,9 +508,12 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                  - s3:PutObject
                   - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:PutObjectAcl
                   - s3:ListBucket
+                  - s3:GetBucketVersioning
+                  - s3:PutBucketVersioning
                 Resource:
                   - !Sub arn:aws:s3:::${GopaleArtifactBucket}/*
                   - !Sub arn:aws:s3:::${GopaleArtifactBucket}
