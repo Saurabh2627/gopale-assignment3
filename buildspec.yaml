@@ -13,4 +13,8 @@ phases:
     commands:
       - echo Pushing the Docker image...
       - docker push $ECR_REGISTRY/gopale-ecr:latest
+      - printf '[{"name":"gopale-container","imageUri":"%s"}]' $ECR_REGISTRY/gopale-ecr:latest > imagedefinitions.json
       - echo Build completed on `date`
+artifacts:
+  files:
+    - imagedefinitions.json
