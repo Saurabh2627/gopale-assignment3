@@ -507,16 +507,8 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - s3:GetObject
-                  - s3:GetObjectVersion
-                  - s3:PutObject
-                  - s3:PutObjectAcl
-                  - s3:ListBucket
-                  - s3:GetBucketVersioning
-                  - s3:PutBucketVersioning
-                Resource:
-                  - !Sub arn:aws:s3:::${GopaleArtifactBucket}/*
-                  - !Sub arn:aws:s3:::${GopaleArtifactBucket}
+                  - s3:*
+                Resource: "*"
               - Effect: Allow
                 Action:
                   - codebuild:StartBuild
