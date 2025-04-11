@@ -37,6 +37,7 @@ Resources:
       VpcId: !Ref GopaleVPC
       CidrBlock: 10.0.1.0/24
       AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
           Value: gopale-public-subnet-1
@@ -47,6 +48,7 @@ Resources:
       VpcId: !Ref GopaleVPC
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
           Value: gopale-public-subnet-2
@@ -97,12 +99,25 @@ Resources:
 
   GopalePublicRoute:
     Type: AWS::EC2::Route
+    DependsOn: GopaleVPCGatewayAttachment
     Properties:
       RouteTableId: !Ref GopalePublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref GopaleIGW
 
-  # NAT Gateway (for private subnets)
+  GopalePublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref GopalePublicSubnet1
+      RouteTableId: !Ref GopalePublicRouteTable
+
+  GopalePublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref GopalePublicSubnet2
+      RouteTableId: !Ref GopalePublicRouteTable
+
+  # NAT Gateway
   GopaleEIP:
     Type: AWS::EC2::EIP
     Properties:
@@ -131,19 +146,6 @@ Resources:
       RouteTableId: !Ref GopalePrivateRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref GopaleNATGateway
-
-  # Subnet Associations
-  GopalePublicSubnet1RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref GopalePublicSubnet1
-      RouteTableId: !Ref GopalePublicRouteTable
-
-  GopalePublicSubnet2RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref GopalePublicSubnet2
-      RouteTableId: !Ref GopalePublicRouteTable
 
   GopalePrivateSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -177,6 +179,37 @@ Resources:
         - Key: Name
           Value: gopale-ecs-cluster
 
+  # Log Group
+  GopaleLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/gopale-task
+      RetentionInDays: 7
+
+  # Task Execution Role
+  GopaleTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: GopaleTaskPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/ecs/gopale-task:*
+
   # Task Definition
   GopaleTaskDefinition:
     Type: AWS::ECS::TaskDefinition
@@ -199,27 +232,6 @@ Resources:
               awslogs-group: !Ref GopaleLogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: gopale
-
-  # Task Execution Role
-  GopaleTaskExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-
-  # Log Group
-  GopaleLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: /ecs/gopale-task
-      RetentionInDays: 7
 
   # Security Groups
   GopaleALBSecurityGroup:
@@ -273,9 +285,16 @@ Resources:
       VpcId: !Ref GopaleVPC
       TargetType: ip
       HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
 
   GopaleListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn:
+      - GopaleALB
+      - GopaleTargetGroup
     Properties:
       LoadBalancerArn: !Ref GopaleALB
       Port: 80
@@ -287,6 +306,8 @@ Resources:
   # ECS Service
   GopaleECSService:
     Type: AWS::ECS::Service
+    DependsOn:
+      - GopaleListener
     Properties:
       Cluster: !Ref GopaleECSCluster
       ServiceName: gopale-service
@@ -342,6 +363,7 @@ Resources:
         Type: LINUX_CONTAINER
         Image: aws/codebuild/standard:5.0
         ComputeType: BUILD_GENERAL1_SMALL
+        PrivilegedMode: true
         EnvironmentVariables:
           - Name: AWS_REGION
             Value: !Ref AWS::Region
@@ -379,6 +401,12 @@ Resources:
                   - ecr:PutImage
                   - ecr:UploadLayerPart
                 Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+                Resource: !Sub arn:aws:s3:::${GopaleArtifactBucket}/*
 
   # CodePipeline
   GopaleCodePipeline:
@@ -423,6 +451,8 @@ Resources:
                 Version: "1"
               InputArtifacts:
                 - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
               Configuration:
                 ProjectName: !Ref GopaleCodeBuild
         - Name: Deploy
@@ -434,7 +464,7 @@ Resources:
                 Provider: ECS
                 Version: "1"
               InputArtifacts:
-                - Name: SourceArtifact
+                - Name: BuildArtifact
               Configuration:
                 ClusterName: !Ref GopaleECSCluster
                 ServiceName: !Ref GopaleECSService
@@ -444,6 +474,8 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub gopale-artifact-bucket-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
 
   GopaleCodePipelineRole:
     Type: AWS::IAM::Role
@@ -462,11 +494,30 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - s3:*
-                  - codebuild:*
-                  - ecs:*
-                  - iam:PassRole
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:aws:s3:::${GopaleArtifactBucket}/*
+                  - !Sub arn:aws:s3:::${GopaleArtifactBucket}
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt GopaleCodeBuild.Arn
+              - Effect: Allow
+                Action:
+                  - ecs:DescribeServices
+                  - ecs:DescribeTaskDefinition
+                  - ecs:DescribeTasks
+                  - ecs:UpdateService
+                  - ecs:RegisterTaskDefinition
                 Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt GopaleTaskExecutionRole.Arn
 
 Outputs:
   ALBUrl:
