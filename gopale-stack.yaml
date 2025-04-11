@@ -1,0 +1,474 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation stack for Gopale ECS Fargate deployment
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Description: GitHub username or organization
+  GitHubRepo:
+    Type: String
+    Default: gopale-assignment3
+    Description: GitHub repository name
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: GitHub branch to use
+  GitHubToken:
+    Type: String
+    NoEcho: true
+    Description: GitHub Personal Access Token (store in Secrets Manager or pass securely)
+
+Resources:
+  # VPC
+  GopaleVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: gopale-vpc
+
+  # Public Subnets
+  GopalePublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref GopaleVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: gopale-public-subnet-1
+
+  GopalePublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref GopaleVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: gopale-public-subnet-2
+
+  # Private Subnets
+  GopalePrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref GopaleVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: gopale-private-subnet-1
+
+  GopalePrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref GopaleVPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: gopale-private-subnet-2
+
+  # Internet Gateway
+  GopaleIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: gopale-igw
+
+  GopaleVPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref GopaleVPC
+      InternetGatewayId: !Ref GopaleIGW
+
+  # Route Tables
+  GopalePublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref GopaleVPC
+      Tags:
+        - Key: Name
+          Value: gopale-public-rt
+
+  GopalePublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref GopalePublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref GopaleIGW
+
+  # NAT Gateway (for private subnets)
+  GopaleEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  GopaleNATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt GopaleEIP.AllocationId
+      SubnetId: !Ref GopalePublicSubnet1
+      Tags:
+        - Key: Name
+          Value: gopale-nat-gateway
+
+  GopalePrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref GopaleVPC
+      Tags:
+        - Key: Name
+          Value: gopale-private-rt
+
+  GopalePrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref GopalePrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref GopaleNATGateway
+
+  # Subnet Associations
+  GopalePublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref GopalePublicSubnet1
+      RouteTableId: !Ref GopalePublicRouteTable
+
+  GopalePublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref GopalePublicSubnet2
+      RouteTableId: !Ref GopalePublicRouteTable
+
+  GopalePrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref GopalePrivateSubnet1
+      RouteTableId: !Ref GopalePrivateRouteTable
+
+  GopalePrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref GopalePrivateSubnet2
+      RouteTableId: !Ref GopalePrivateRouteTable
+
+  # ECR Repository
+  GopaleECR:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: gopale-ecr
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      Tags:
+        - Key: Name
+          Value: gopale-ecr
+
+  # ECS Cluster
+  GopaleECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: gopale-ecs-cluster
+      Tags:
+        - Key: Name
+          Value: gopale-ecs-cluster
+
+  # Task Definition
+  GopaleTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: gopale-task
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt GopaleTaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: gopale-container
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/gopale-ecr:latest"
+          PortMappings:
+            - ContainerPort: 5000
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref GopaleLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: gopale
+
+  # Task Execution Role
+  GopaleTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # Log Group
+  GopaleLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/gopale-task
+      RetentionInDays: 7
+
+  # Security Groups
+  GopaleALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Gopale ALB
+      VpcId: !Ref GopaleVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: gopale-alb-sg
+
+  GopaleECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Gopale ECS
+      VpcId: !Ref GopaleVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5000
+          ToPort: 5000
+          SourceSecurityGroupId: !Ref GopaleALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: gopale-ecs-sg
+
+  # Application Load Balancer
+  GopaleALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: gopale-alb
+      Subnets:
+        - !Ref GopalePublicSubnet1
+        - !Ref GopalePublicSubnet2
+      SecurityGroups:
+        - !Ref GopaleALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: gopale-alb
+
+  GopaleTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: gopale-tg
+      Port: 5000
+      Protocol: HTTP
+      VpcId: !Ref GopaleVPC
+      TargetType: ip
+      HealthCheckPath: /
+
+  GopaleListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref GopaleALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref GopaleTargetGroup
+
+  # ECS Service
+  GopaleECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref GopaleECSCluster
+      ServiceName: gopale-service
+      TaskDefinition: !Ref GopaleTaskDefinition
+      DesiredCount: 2
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref GopalePrivateSubnet1
+            - !Ref GopalePrivateSubnet2
+          SecurityGroups:
+            - !Ref GopaleECSSecurityGroup
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: gopale-container
+          ContainerPort: 5000
+          TargetGroupArn: !Ref GopaleTargetGroup
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+
+  # Auto Scaling
+  GopaleServiceAutoScaling:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      MaxCapacity: 10
+      MinCapacity: 2
+      ResourceId: !Sub service/${GopaleECSCluster}/${GopaleECSService.Name}
+      ScalableDimension: ecs:service:DesiredCount
+      ServiceNamespace: ecs
+
+  GopaleScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: gopale-scaling-policy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref GopaleServiceAutoScaling
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 70.0
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+
+  # CodeBuild
+  GopaleCodeBuild:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: gopale-codebuild
+      ServiceRole: !GetAtt GopaleCodeBuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        Image: aws/codebuild/standard:5.0
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: AWS_REGION
+            Value: !Ref AWS::Region
+          - Name: ECR_REGISTRY
+            Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com"
+      Source:
+        Type: GITHUB
+        Location: !Sub "https://github.com/${GitHubOwner}/${GitHubRepo}"
+        BuildSpec: buildspec.yaml
+
+  GopaleCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:CompleteLayerUpload
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource: "*"
+
+  # CodePipeline
+  GopaleCodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: gopale-pipeline
+      RoleArn: !GetAtt GopaleCodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref GopaleArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: "1"
+              OutputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+                Branch: !Ref GitHubBranch
+                OAuthToken: !Ref GitHubToken
+        - Name: Approval
+          Actions:
+            - Name: ManualApproval
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: "1"
+        - Name: Build
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ProjectName: !Ref GopaleCodeBuild
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ECS
+                Version: "1"
+              InputArtifacts:
+                - Name: SourceArtifact
+              Configuration:
+                ClusterName: !Ref GopaleECSCluster
+                ServiceName: !Ref GopaleECSService
+                FileName: imagedefinitions.json
+
+  GopaleArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub gopale-artifact-bucket-${AWS::AccountId}
+
+  GopaleCodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipelinePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                  - codebuild:*
+                  - ecs:*
+                  - iam:PassRole
+                Resource: "*"
+
+Outputs:
+  ALBUrl:
+    Description: URL of the Application Load Balancer
+    Value: !Sub "http://${GopaleALB.DNSName}"

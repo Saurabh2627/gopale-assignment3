@@ -1,0 +1,6 @@
+[
+    {
+      "name": "gopale-container",
+      "imageUri": "515880899753.dkr.ecr.us-east-1.amazonaws.com/gopale-ecr:latest"
+    }
+  ]
